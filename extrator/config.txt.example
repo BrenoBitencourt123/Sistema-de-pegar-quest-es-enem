@@ -1,0 +1,4 @@
+# Configurações do extrator
+# Copie este arquivo para config.txt e preencha com sua chave
+
+OPENAI_API_KEY=cole-sua-chave-aqui

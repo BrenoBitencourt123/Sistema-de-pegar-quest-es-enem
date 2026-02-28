@@ -1,0 +1,29 @@
+# Dependências
+node_modules/
+
+# Build
+dist/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Chave de API e configs sensiveis — NUNCA subir!
+extrator/config.txt
+
+# Arquivos gerados pela extração
+extrator/provas/
+extrator/*.json
+questoes_*.json
+*.parcial.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/

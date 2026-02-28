@@ -1,0 +1,13 @@
+# Gabarito ENEM 2020 - 1º Dia - Caderno Azul
+# Formato: numero letra
+# Uma questão por linha
+01 A
+02 C
+03 B
+04 D
+05 E
+06 A
+07 B
+08 C
+09 D
+10 E
