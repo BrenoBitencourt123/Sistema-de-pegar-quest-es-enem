@@ -1,8 +1,12 @@
 function getStatus(q) {
-  const hasContent = !!(q.statement?.trim() || q.image || q.command?.trim())
-  const altsOk = q.alternatives.length >= 2 && q.alternatives.every(a => a.trim())
+  const hasContent = !!(
+    q.content?.some(b => (b.type === 'text' && b.value?.trim()) || (b.type === 'image' && b.data)) ||
+    q.command?.trim()
+  )
+  const altFilled = a => typeof a === 'string' ? a.trim() : (a.text?.trim() || a.image)
+  const altsOk = q.alternatives.length >= 2 && q.alternatives.every(altFilled)
   if (hasContent && altsOk) return 'complete'
-  if (hasContent || q.alternatives.some(a => a.trim())) return 'partial'
+  if (hasContent || q.alternatives.some(altFilled)) return 'partial'
   return 'empty'
 }
 

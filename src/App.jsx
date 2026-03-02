@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useCallback } from 'react'
 import './index.css'
 import QuestionEditor from './components/QuestionEditor'
 import QuestionPreview from './components/QuestionPreview'
@@ -6,20 +6,68 @@ import QuestionListModal from './components/QuestionListModal'
 import PDFImporter from './components/PDFImporter'
 import PdfAnnotatorModal from './components/PdfAnnotatorModal'
 
+const EMPTY_ALT = () => ({ text: '', image: null })
+
 const DEFAULT_QUESTION = {
   exam: 'ENEM 2020 – 1º Dia – Caderno Azul',
   number: '1',
-  statement: '',
-  image: null,
-  imageCaption: '',
+  content: [],
   command: '',
-  alternatives: ['', '', '', '', ''],
+  alternatives: [EMPTY_ALT(), EMPTY_ALT(), EMPTY_ALT(), EMPTY_ALT(), EMPTY_ALT()],
   correct: 0,
+}
+
+function migrateQuestion(q) {
+  if (q.content && q.alternatives?.[0] && typeof q.alternatives[0] === 'object') return q  // já no novo formato
+  const content = q.content || []
+  if (!q.content) {
+    if (q.statement) content.push({ type: 'text', value: q.statement })
+    if (q.image || q.has_image) content.push({ type: 'image', data: q.image || null, caption: q.imageCaption || '', has_image: !!q.has_image })
+  }
+  // Migrar alternativas de string[] para {text, image}[]
+  const alternatives = (q.alternatives || []).map(a =>
+    typeof a === 'string' ? { text: a, image: null } : a
+  )
+  const { statement, image, imageCaption, has_image, ...rest } = q
+  return { ...rest, content, alternatives }
 }
 
 function makeNewQuestion(questions) {
   const maxNum = questions.reduce((max, q) => Math.max(max, Number(q.number) || 0), 0)
   return { ...DEFAULT_QUESTION, number: String(maxNum + 1) }
+}
+
+const BACKEND = 'http://localhost:8000'
+
+// Retorna quais campos de texto foram alterados entre original e atual
+function camposAlterados(original, atual) {
+  const campos = []
+  if (original.command !== atual.command) campos.push('command')
+  const origAlts = original.alternatives || []
+  const atualAlts = atual.alternatives || []
+  const altsChanged = origAlts.some((a, i) => {
+    const ot = typeof a === 'string' ? a : a?.text ?? ''
+    const ct = typeof atualAlts[i] === 'string' ? atualAlts[i] : atualAlts[i]?.text ?? ''
+    return ot !== ct
+  })
+  if (altsChanged) campos.push('alternatives')
+  const origContent = JSON.stringify((original.content || []).map(b => ({ tipo: b.type, valor: b.value })))
+  const atualContent = JSON.stringify((atual.content || []).map(b => ({ tipo: b.type, valor: b.value })))
+  if (origContent !== atualContent) campos.push('content')
+  return campos
+}
+
+// Remove base64 de imagens para não inflar correcoes.json
+function stripImages(question) {
+  return {
+    ...question,
+    content: (question.content || []).map(b =>
+      b.type === 'image' ? { ...b, data: null } : b
+    ),
+    alternatives: (question.alternatives || []).map(a =>
+      typeof a === 'object' && a !== null ? { ...a, image: null } : a
+    ),
+  }
 }
 
 export default function App() {
@@ -29,6 +77,9 @@ export default function App() {
   const [showPDFImporter, setShowPDFImporter] = useState(false)
   const [showQuestionList, setShowQuestionList] = useState(false)
   const [annotatorFile, setAnnotatorFile] = useState(null)
+  // originals: snapshot imutável de cada questão extraída do PDF (null = sem PDF importado)
+  const [originals, setOriginals]         = useState(null)
+  const [correcaoEnviada, setCorrecaoEnviada] = useState(false)
   const importRef        = useRef(null)
   const annotatorInputRef = useRef(null)
 
@@ -36,11 +87,41 @@ export default function App() {
 
   function updateQuestion(updated) {
     setQuestions(prev => prev.map((q, i) => i === currentIndex ? updated : q))
+    setCorrecaoEnviada(false)
   }
+
+  const original = originals?.[currentIndex] ?? null
+  const mudancas = original ? camposAlterados(original, question) : []
+  const temMudancas = mudancas.length > 0
+
+  const enviarCorrecao = useCallback(async () => {
+    if (!original || !temMudancas) return
+    try {
+      await fetch(`${BACKEND}/correcao`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          numero: String(question.number),
+          original: stripImages(original),
+          corrigido: stripImages(question),
+          campos_alterados: mudancas,
+        }),
+      })
+      // Atualizar o original para o estado atual (próxima edição gera nova correção)
+      setOriginals(prev => prev.map((o, i) => i === currentIndex ? stripImages(question) : o))
+      setCorrecaoEnviada(true)
+    } catch (err) {
+      alert('Erro ao enviar correção: ' + err.message)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [original, question, mudancas, currentIndex])
 
   function handlePDFImport(questoes) {
     setQuestions(questoes)
     setCurrentIndex(0)
+    // Guardar snapshot dos originais extraídos (sem imagens base64 para economizar memória)
+    setOriginals(questoes.map(stripImages))
+    setCorrecaoEnviada(false)
   }
 
   function handleImport(e) {
@@ -50,7 +131,7 @@ export default function App() {
     reader.onload = (ev) => {
       try {
         const data = JSON.parse(ev.target.result)
-        const list = Array.isArray(data) ? data : [data]
+        const list = (Array.isArray(data) ? data : [data]).map(migrateQuestion)
         setQuestions(list)
         setCurrentIndex(0)
       } catch {
@@ -61,14 +142,35 @@ export default function App() {
     e.target.value = ''
   }
 
+  const ALT_ROLES = { A: 0, B: 1, C: 2, D: 3, E: 4 }
+
   function handleAnnotatorSave(images) {
     setQuestions(prev => {
       const updated = [...prev]
       for (const img of images) {
-        if (img.role !== 'stem') continue
         const idx = updated.findIndex(q => String(q.number) === String(img.questionNumber))
-        if (idx !== -1) {
-          updated[idx] = { ...updated[idx], image: img.dataUrl }
+        if (idx === -1) continue
+        const q = updated[idx]
+
+        if (img.role === 'stem') {
+          // Imagem do enunciado → primeiro bloco de imagem vazio ou novo bloco
+          const content = [...(q.content || [])]
+          const emptyImgIdx = content.findIndex(b => b.type === 'image' && !b.data)
+          if (emptyImgIdx !== -1) {
+            content[emptyImgIdx] = { ...content[emptyImgIdx], data: img.dataUrl }
+          } else {
+            content.push({ type: 'image', data: img.dataUrl, caption: '', has_image: true })
+          }
+          updated[idx] = { ...q, content }
+
+        } else if (img.role in ALT_ROLES) {
+          // Imagem de alternativa → atualiza o campo image da alternativa correspondente
+          const altIdx = ALT_ROLES[img.role]
+          const alternatives = [...(q.alternatives || [])]
+          if (altIdx < alternatives.length) {
+            alternatives[altIdx] = { ...alternatives[altIdx], image: img.dataUrl }
+            updated[idx] = { ...q, alternatives }
+          }
         }
       }
       return updated
@@ -100,6 +202,7 @@ export default function App() {
       {showPDFImporter && (
         <PDFImporter
           onImport={handlePDFImport}
+          onPartialUpdate={(questoes) => { setQuestions(questoes); setCurrentIndex(0) }}
           onClose={() => setShowPDFImporter(false)}
         />
       )}
@@ -239,7 +342,28 @@ export default function App() {
                 </h2>
                 <span className="text-xs text-slate-400">de {questions.length}</span>
               </div>
-              <div className="flex items-center gap-1">
+              <div className="flex items-center gap-2">
+                {/* Botão de correção — aparece quando há mudanças em relação ao original extraído */}
+                {temMudancas && !correcaoEnviada && (
+                  <button
+                    onClick={enviarCorrecao}
+                    title="Registrar esta correção para melhorar extrações futuras"
+                    className="flex items-center gap-1 text-[11px] font-semibold text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-300 px-2 py-1 rounded-lg transition"
+                  >
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                    </svg>
+                    Treinar IA
+                  </button>
+                )}
+                {correcaoEnviada && (
+                  <span className="text-[11px] font-semibold text-emerald-600 flex items-center gap-1">
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                    </svg>
+                    Correção salva
+                  </span>
+                )}
                 <button
                   onClick={() => setCurrentIndex(i => Math.max(0, i - 1))}
                   disabled={currentIndex === 0}

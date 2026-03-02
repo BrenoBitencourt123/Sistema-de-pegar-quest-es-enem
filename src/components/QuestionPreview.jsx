@@ -1,7 +1,9 @@
 const LETTERS = ['A', 'B', 'C', 'D', 'E']
 
 export default function QuestionPreview({ question }) {
-  const total = 90 // default ENEM total
+  const total = 90
+  const content = question.content || []
+  const hasContent = content.some(b => (b.type === 'text' && b.value) || (b.type === 'image' && (b.data || b.has_image)))
 
   return (
     <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden font-sans">
@@ -33,30 +35,40 @@ export default function QuestionPreview({ question }) {
           </div>
         </div>
 
-        {/* Statement */}
-        {question.statement && (
-          <p className="text-sm text-slate-700 leading-relaxed mb-4 whitespace-pre-wrap">
-            {question.statement}
-          </p>
-        )}
-
-        {/* Image */}
-        {question.image && (
-          <div className="mb-4 flex flex-col items-center">
-            <img
-              src={question.image}
-              alt="Imagem da questão"
-              className="max-w-full rounded-lg border border-slate-200 object-contain max-h-72"
-            />
-            {question.imageCaption && (
-              <p className="mt-1.5 text-xs text-slate-400 text-center italic">
-                {question.imageCaption}
+        {/* Blocos de conteúdo */}
+        {content.map((block, i) => {
+          if (block.type === 'text') {
+            return block.value ? (
+              <p key={i} className="text-sm text-slate-700 leading-relaxed mb-4 whitespace-pre-wrap">
+                {block.value}
               </p>
-            )}
-          </div>
-        )}
+            ) : null
+          }
+          if (block.type === 'image') {
+            return block.data ? (
+              <div key={i} className="mb-4 flex flex-col items-center">
+                <img
+                  src={block.data}
+                  alt="Imagem da questão"
+                  className="max-w-full rounded-lg border border-slate-200 object-contain max-h-72"
+                />
+                {block.caption && (
+                  <p className="mt-1.5 text-xs text-slate-400 text-center italic">{block.caption}</p>
+                )}
+              </div>
+            ) : block.has_image ? (
+              <div key={i} className="mb-4 flex items-center justify-center gap-2 px-4 py-5 rounded-xl border-2 border-dashed border-amber-200 bg-amber-50">
+                <svg className="w-5 h-5 text-amber-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+                <span className="text-xs text-amber-700 font-medium">Imagem pendente — use "Anotar PDF" para inserir</span>
+              </div>
+            ) : null
+          }
+          return null
+        })}
 
-        {/* Command */}
+        {/* Comando */}
         {question.command && (
           <p className="text-sm text-slate-800 font-medium leading-relaxed mb-5">
             {question.command}
@@ -64,13 +76,14 @@ export default function QuestionPreview({ question }) {
         )}
 
         {/* Divider */}
-        {(question.statement || question.image || question.command) && question.alternatives.some(a => a) && (
+        {(hasContent || question.command) && question.alternatives.some(a => a) && (
           <hr className="border-slate-100 mb-4" />
         )}
 
-        {/* Alternatives */}
+        {/* Alternativas */}
         <div className="flex flex-col gap-2">
           {question.alternatives.map((alt, i) => {
+            const altObj = typeof alt === 'string' ? { text: alt, image: null } : alt
             const isCorrect = question.correct === i
             return (
               <div
@@ -83,16 +96,24 @@ export default function QuestionPreview({ question }) {
               >
                 <span
                   className={`flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold mt-0.5 ${
-                    isCorrect
-                      ? 'bg-emerald-500 text-white'
-                      : 'bg-slate-100 text-slate-500'
+                    isCorrect ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-500'
                   }`}
                 >
                   {LETTERS[i]}
                 </span>
-                <span className={`text-sm leading-relaxed ${isCorrect ? 'text-emerald-800 font-medium' : 'text-slate-700'}`}>
-                  {alt || <span className="text-slate-300 italic">Alternativa {LETTERS[i]}</span>}
-                </span>
+                <div className="flex flex-col gap-1.5 flex-1">
+                  {altObj.text && (
+                    <span className={`text-sm leading-relaxed ${isCorrect ? 'text-emerald-800 font-medium' : 'text-slate-700'}`}>
+                      {altObj.text}
+                    </span>
+                  )}
+                  {altObj.image && (
+                    <img src={altObj.image} alt={`Alternativa ${LETTERS[i]}`} className="max-h-32 max-w-full object-contain rounded" />
+                  )}
+                  {!altObj.text && !altObj.image && (
+                    <span className="text-slate-300 italic text-sm">Alternativa {LETTERS[i]}</span>
+                  )}
+                </div>
               </div>
             )
           })}

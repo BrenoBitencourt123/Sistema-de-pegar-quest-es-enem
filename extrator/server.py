@@ -11,8 +11,11 @@ import queue
 import sys
 import tempfile
 import threading
+import time
 import uuid
 from pathlib import Path
+
+from pydantic import BaseModel
 
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -47,19 +50,22 @@ def _worker(job_id: str, pdf_path: str, ano: int, dia: int,
     def on_progress(msg: str, nivel: str = "info"):
         q.put({"tipo": "log", "msg": msg, "nivel": nivel})
 
-    try:
-        # Substituir o log global por nosso callback
-        import extrator as ext
-        ext._progress_cb = on_progress
+    def on_partial(questoes: list):
+        q.put({"tipo": "partial", "questoes": questoes})
 
-        questoes = processar_prova(
+    try:
+        # Registrar callback de log nesta thread (thread-local evita conflito entre jobs simultâneos)
+        _thread_log_cb.cb = on_progress
+
+        questoes, relatorio = processar_prova(
             pdf_path=pdf_path,
             ano=ano,
             dia=dia,
             caderno=caderno,
             gabarito_path=gabarito_path,
+            partial_cb=on_partial,
         )
-        q.put({"tipo": "done", "questoes": questoes})
+        q.put({"tipo": "done", "questoes": questoes, "relatorio": relatorio})
 
     except Exception as e:
         q.put({"tipo": "erro", "msg": str(e)})
@@ -120,23 +126,32 @@ async def progresso(job_id: str):
 
     async def gerar():
         loop = asyncio.get_event_loop()
+        segundos_idle = 0
+        MAX_IDLE = 600  # 10 minutos de inatividade total antes de desistir
+
         while True:
-            # Ler da fila sem bloquear o event loop
+            # Aguardar próximo item com check de 30s para emitir heartbeat
             try:
                 item = await loop.run_in_executor(None, q.get, True, 30)
+                segundos_idle = 0  # reset ao receber qualquer item
             except Exception:
-                yield "data: {\"tipo\":\"erro\",\"msg\":\"Timeout\"}\n\n"
-                break
+                # Nenhum item em 30s — emite heartbeat SSE e continua aguardando
+                segundos_idle += 30
+                if segundos_idle >= MAX_IDLE:
+                    yield "data: {\"tipo\":\"erro\",\"msg\":\"Timeout: servidor sem resposta por 10 minutos\"}\n\n"
+                    break
+                yield ": heartbeat\n\n"  # comentário SSE — mantém conexão viva
+                continue
 
             if item is None:
-                # Fim do stream
+                # Sentinela de fim
                 del jobs[job_id]
                 break
 
             yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
 
             if item.get("tipo") in ("done", "erro"):
-                # Aguardar sentinela
+                # Aguardar sentinela final
                 try:
                     await loop.run_in_executor(None, q.get, True, 5)
                 except Exception:
@@ -154,22 +169,75 @@ async def progresso(job_id: str):
     )
 
 
+class CorrecaoPayload(BaseModel):
+    numero: str
+    original: dict
+    corrigido: dict
+    campos_alterados: list[str]
+
+
+@app.post("/correcao")
+async def salvar_correcao(payload: CorrecaoPayload):
+    """
+    Salva uma correção manual feita pelo usuário no editor.
+    As correções são usadas como exemplos few-shot nas próximas extrações.
+    """
+    caminho = Path(__file__).parent / "correcoes.json"
+    historico: list = []
+    if caminho.exists():
+        try:
+            historico = json.loads(caminho.read_text(encoding="utf-8"))
+        except Exception:
+            historico = []
+
+    historico.append({
+        "numero":          payload.numero,
+        "campos_alterados": payload.campos_alterados,
+        "original":        payload.original,
+        "corrigido":       payload.corrigido,
+        "timestamp":       time.time(),
+    })
+
+    # Manter no máximo 200 correções para não crescer indefinidamente
+    if len(historico) > 200:
+        historico = historico[-200:]
+
+    caminho.write_text(json.dumps(historico, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"ok": True, "total": len(historico)}
+
+
+@app.get("/correcoes/count")
+def contar_correcoes():
+    caminho = Path(__file__).parent / "correcoes.json"
+    if not caminho.exists():
+        return {"total": 0}
+    try:
+        historico = json.loads(caminho.read_text(encoding="utf-8"))
+        return {"total": len(historico)}
+    except Exception:
+        return {"total": 0}
+
+
 @app.get("/")
 def root():
     return {"status": "ok", "msg": "Servidor de extração ENEM rodando"}
 
 
-# ─── Patch no log() do extrator para usar callback ───────────────────────────
+# ─── Patch no log() do extrator para usar callback por thread ────────────────
+# Cada job roda em sua própria thread. Usando threading.local() cada thread
+# tem seu próprio callback — jobs simultâneos não se interferem.
 
+import threading
 import extrator as _ext
 
-_ext._progress_cb = None
+_thread_log_cb = threading.local()  # atributo .cb por thread
 _original_log = _ext.log
 
 def _patched_log(msg: str, nivel: str = "info"):
-    _original_log(msg, nivel)  # manter print no terminal também
-    if _ext._progress_cb:
-        _ext._progress_cb(msg, nivel)
+    _original_log(msg, nivel)  # manter print no terminal
+    cb = getattr(_thread_log_cb, 'cb', None)
+    if cb:
+        cb(msg, nivel)
 
 _ext.log = _patched_log
 
