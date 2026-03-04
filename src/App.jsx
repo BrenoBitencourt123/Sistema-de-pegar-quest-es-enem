@@ -5,6 +5,7 @@ import QuestionPreview from './components/QuestionPreview'
 import QuestionListModal from './components/QuestionListModal'
 import PDFImporter from './components/PDFImporter'
 import PdfAnnotatorModal from './components/PdfAnnotatorModal'
+import { publicarQuestao } from './lib/publishToAtlas'
 
 const EMPTY_ALT = () => ({ text: '', image: null })
 
@@ -15,6 +16,7 @@ const DEFAULT_QUESTION = {
   command: '',
   alternatives: [EMPTY_ALT(), EMPTY_ALT(), EMPTY_ALT(), EMPTY_ALT(), EMPTY_ALT()],
   correct: 0,
+  needs_review: false,
 }
 
 function migrateQuestion(q) {
@@ -30,6 +32,10 @@ function migrateQuestion(q) {
   )
   const { statement, image, imageCaption, has_image, ...rest } = q
   return { ...rest, content, alternatives }
+}
+
+function sortByNumber(qs) {
+  return [...qs].sort((a, b) => (Number(a.number) || 0) - (Number(b.number) || 0))
 }
 
 function makeNewQuestion(questions) {
@@ -80,14 +86,31 @@ export default function App() {
   // originals: snapshot imutável de cada questão extraída do PDF (null = sem PDF importado)
   const [originals, setOriginals]         = useState(null)
   const [correcaoEnviada, setCorrecaoEnviada] = useState(false)
+  const [publishState, setPublishState]   = useState('idle') // 'idle' | 'loading' | 'success' | 'error'
+  const [publishError, setPublishError]   = useState('')
   const importRef        = useRef(null)
   const annotatorInputRef = useRef(null)
 
   const question = questions[currentIndex]
 
   function updateQuestion(updated) {
-    setQuestions(prev => prev.map((q, i) => i === currentIndex ? updated : q))
+    const numberChanged = questions[currentIndex]?.number !== updated.number
+    if (numberChanged) {
+      const updatedList = questions.map((q, i) => i === currentIndex ? updated : q)
+      const sorted = sortByNumber(updatedList)
+      const newIdx = sorted.findIndex(q => q.number === updated.number)
+      setQuestions(sorted)
+      setCurrentIndex(newIdx >= 0 ? newIdx : currentIndex)
+    } else {
+      setQuestions(prev => prev.map((q, i) => i === currentIndex ? updated : q))
+    }
     setCorrecaoEnviada(false)
+  }
+
+  function toggleReview() {
+    setQuestions(prev => prev.map((q, i) =>
+      i === currentIndex ? { ...q, needs_review: !q.needs_review } : q
+    ))
   }
 
   const original = originals?.[currentIndex] ?? null
@@ -180,9 +203,33 @@ export default function App() {
 
   function handleAddQuestion() {
     const nova = makeNewQuestion(questions)
-    setQuestions(prev => [...prev, nova])
-    setCurrentIndex(questions.length)
+    const sorted = sortByNumber([...questions, nova])
+    const newIdx = sorted.findIndex(q => q === nova)
+    setQuestions(sorted)
+    setCurrentIndex(newIdx >= 0 ? newIdx : sorted.length - 1)
     setShowQuestionList(false)
+  }
+
+  function isQuestionComplete(q) {
+    const hasContent = !!(
+      q.content?.some(b => (b.type === 'text' && b.value?.trim()) || (b.type === 'image' && b.data)) ||
+      q.command?.trim()
+    )
+    const altFilled = a => typeof a === 'string' ? a.trim() : (a?.text?.trim() || a?.image)
+    return hasContent && q.alternatives.length >= 2 && q.alternatives.every(altFilled)
+  }
+
+  async function handlePublish() {
+    setPublishState('loading')
+    setPublishError('')
+    try {
+      await publicarQuestao(question)
+      setPublishState('success')
+      setTimeout(() => setPublishState('idle'), 3000)
+    } catch (err) {
+      setPublishError(err.message)
+      setPublishState('error')
+    }
   }
 
   function handleExport() {
@@ -336,11 +383,16 @@ export default function App() {
             {/* Barra de navegação entre questões */}
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-violet-500" />
+                <span className={`w-2 h-2 rounded-full ${question.needs_review ? 'bg-orange-400' : 'bg-violet-500'}`} />
                 <h2 className="text-sm font-bold text-slate-700">
                   Questão {question.number || currentIndex + 1}
                 </h2>
                 <span className="text-xs text-slate-400">de {questions.length}</span>
+                {question.needs_review && (
+                  <span className="text-[10px] font-semibold text-orange-600 bg-orange-50 border border-orange-200 px-1.5 py-0.5 rounded-full">
+                    Revisar
+                  </span>
+                )}
               </div>
               <div className="flex items-center gap-2">
                 {/* Botão de correção — aparece quando há mudanças em relação ao original extraído */}
@@ -396,11 +448,50 @@ export default function App() {
               <div className="flex items-center gap-2 mb-3">
                 <span className="w-2 h-2 rounded-full bg-emerald-400" />
                 <h2 className="text-sm font-bold text-slate-700">Preview</h2>
-                <span className="ml-auto text-xs text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">
-                  Tempo real
-                </span>
+                <div className="ml-auto flex items-center gap-2">
+                  {publishState === 'success' && (
+                    <span className="flex items-center gap-1 text-xs font-semibold text-emerald-600">
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                      </svg>
+                      Publicada!
+                    </span>
+                  )}
+                  {publishState === 'error' && (
+                    <span className="text-xs text-red-500 font-medium" title={publishError}>
+                      Erro ao publicar
+                    </span>
+                  )}
+                  {isQuestionComplete(question) && !question.needs_review && (
+                    <button
+                      onClick={handlePublish}
+                      disabled={publishState === 'loading'}
+                      className="flex items-center gap-1.5 text-xs font-bold text-white bg-emerald-500 hover:bg-emerald-600 disabled:opacity-60 disabled:cursor-not-allowed px-3 py-1.5 rounded-lg transition shadow-sm"
+                    >
+                      {publishState === 'loading' ? (
+                        <>
+                          <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+                          </svg>
+                          Publicando…
+                        </>
+                      ) : (
+                        <>
+                          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 11l3-3m0 0l3 3m-3-3v8m0-13a9 9 0 110 18 9 9 0 010-18z" />
+                          </svg>
+                          Publicar no Atlas
+                        </>
+                      )}
+                    </button>
+                  )}
+                  <span className="text-xs text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">
+                    Tempo real
+                  </span>
+                </div>
               </div>
-              <QuestionPreview question={question} />
+              <QuestionPreview question={question} onToggleReview={toggleReview} />
             </div>
           </div>
 

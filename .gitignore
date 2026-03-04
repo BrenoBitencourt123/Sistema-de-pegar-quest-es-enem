@@ -13,6 +13,8 @@ venv/
 
 # Chave de API e configs sensiveis — NUNCA subir!
 extrator/config.txt
+.env
+.env.local
 
 # Arquivos gerados pela extração
 extrator/provas/

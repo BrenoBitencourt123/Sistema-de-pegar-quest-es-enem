@@ -1,6 +1,6 @@
 const LETTERS = ['A', 'B', 'C', 'D', 'E']
 
-export default function QuestionPreview({ question }) {
+export default function QuestionPreview({ question, onToggleReview }) {
   const total = 90
   const content = question.content || []
   const hasContent = content.some(b => (b.type === 'text' && b.value) || (b.type === 'image' && (b.data || b.has_image)))
@@ -121,11 +121,18 @@ export default function QuestionPreview({ question }) {
 
         {/* Bookmark */}
         <div className="mt-5 flex items-center justify-between">
-          <button className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-violet-600 transition">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <button
+            onClick={onToggleReview}
+            className={`flex items-center gap-1.5 text-xs font-medium transition ${
+              question.needs_review
+                ? 'text-orange-500 hover:text-orange-700'
+                : 'text-slate-400 hover:text-orange-500'
+            }`}
+          >
+            <svg className="w-4 h-4" fill={question.needs_review ? 'currentColor' : 'none'} viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
             </svg>
-            Marcar para revisão
+            {question.needs_review ? 'Marcada para revisão' : 'Marcar para revisão'}
           </button>
           <div className="flex items-center gap-3">
             <button className="text-xs font-medium text-slate-400 hover:text-slate-600 transition">Anterior</button>

@@ -23,10 +23,11 @@ const STATUS_ACTIVE = {
 }
 
 export default function QuestionListModal({ questions, currentIndex, onSelect, onAdd, onClose }) {
-  const total    = questions.length
-  const complete = questions.filter(q => getStatus(q) === 'complete').length
-  const partial  = questions.filter(q => getStatus(q) === 'partial').length
-  const empty    = total - complete - partial
+  const total      = questions.length
+  const complete   = questions.filter(q => getStatus(q) === 'complete').length
+  const partial    = questions.filter(q => getStatus(q) === 'partial').length
+  const empty      = total - complete - partial
+  const revisar    = questions.filter(q => q.needs_review).length
 
   function handleSelect(i) {
     onSelect(i)
@@ -54,6 +55,12 @@ export default function QuestionListModal({ questions, currentIndex, onSelect, o
                 <span className="w-1.5 h-1.5 rounded-full bg-slate-200 inline-block" />
                 {empty} vazias
               </span>
+              {revisar > 0 && (
+                <span className="flex items-center gap-1 text-[10px] text-orange-500 font-medium">
+                  <span className="w-1.5 h-1.5 rounded-full bg-orange-400 inline-block" />
+                  {revisar} p/ revisar
+                </span>
+              )}
             </div>
           </div>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 transition">
@@ -73,14 +80,17 @@ export default function QuestionListModal({ questions, currentIndex, onSelect, o
                 <button
                   key={i}
                   onClick={() => handleSelect(i)}
-                  title={`Questão ${q.number || i + 1}`}
+                  title={`Questão ${q.number || i + 1}${q.needs_review ? ' — pendente de revisão' : ''}`}
                   className={`
-                    h-9 rounded-lg text-[11px] font-bold border transition
+                    relative h-9 rounded-lg text-[11px] font-bold border transition
                     ${STATUS_STYLE[status]}
                     ${isActive ? STATUS_ACTIVE[status] : 'hover:opacity-75'}
                   `}
                 >
                   {q.number || i + 1}
+                  {q.needs_review && (
+                    <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-orange-400 border-2 border-white" />
+                  )}
                 </button>
               )
             })}

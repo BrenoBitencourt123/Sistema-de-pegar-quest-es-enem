@@ -56,7 +56,7 @@ DPI              = 150       # resolução de renderização para modo imagem/h�
 MAX_TENTATIVAS   = 3
 MIN_CHARS_TEXTO  = 200       # mínimo de caracteres para considerar página com texto
 LETRAS           = {"A": 0, "B": 1, "C": 2, "D": 3, "E": 4}
-POPPLER_PADRAO   = r"C:\poppler-24.08.0\Library\bin"
+POPPLER_PADRAO   = r"C:\Users\breno\poppler\poppler-24.08.0\Library\bin"
 
 # Modo de extração:
 #   "texto"   — só texto extraído (mais barato, gpt-4o-mini)
@@ -153,6 +153,8 @@ Campos:
 - comando: a frase/pergunta que aparece IMEDIATAMENTE ANTES das alternativas A B C D E.
   Geralmente começa com "Os recursos...", "De acordo com...", "Assinale...", "Com base...", etc.
   Se não estiver visível (ex: está dentro de uma imagem), deixe como string vazia "".
+  CRÍTICO: o texto do comando NUNCA deve aparecer também em "conteudo". Se um texto for o comando, coloque-o APENAS em "comando" e NÃO o inclua em "conteudo". Os campos são mutuamente exclusivos para o mesmo trecho.
+  TESTE SEMÂNTICO para identificar o comando: mentalmente concatene cada alternativa com o último parágrafo de texto antes delas. Se formar uma frase com sentido ("Esses polímeros têm vantagens porque... são degradados mais rápido" ✓), esse parágrafo é o "comando". Se não fizer sentido concatenado ("A enorme quantidade de resíduos... são degradados mais rápido" ✗), é texto de apoio e vai em "conteudo".
 
 Marcadores de alternativa:
 O texto extraído usa [A], [B], [C], [D], [E] para marcar o início de cada alternativa.
@@ -240,6 +242,59 @@ def _renderizar_pagina_fitz(pagina) -> object:
     mat = fitz.Matrix(DPI / 72, DPI / 72)
     pix = pagina.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
     return PIL.Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+
+
+def _detectar_e_dividir_colunas(img):
+    """
+    Detecta se a imagem tem layout de 2 colunas analisando a faixa vertical central.
+    Retorna lista com 1 imagem (página inteira) ou 2 imagens (coluna esq + coluna dir).
+    """
+    import PIL.Image
+    largura, altura = img.size
+
+    # Analisa faixa central (30% a 70% da largura) procurando coluna de espaço branco
+    x_inicio = int(largura * 0.30)
+    x_fim    = int(largura * 0.70)
+    img_gray = img.convert("L")
+    pixels   = img_gray.load()
+
+    # Para cada coluna vertical no range central, calcular brilho médio
+    brilhos = []
+    amostra_altura = min(altura, 200)  # usar primeiras linhas para eficiência
+    for x in range(x_inicio, x_fim):
+        total = sum(pixels[x, y] for y in range(50, amostra_altura))
+        brilhos.append((x, total / (amostra_altura - 50)))
+
+    if not brilhos:
+        return [img]
+
+    # Coluna mais clara no centro = gutter entre colunas
+    x_mais_claro, brilho_max = max(brilhos, key=lambda b: b[1])
+    brilho_medio = sum(b for _, b in brilhos) / len(brilhos)
+
+    # Só divide se o ponto mais claro for significativamente mais claro que a média
+    if brilho_max < brilho_medio * 1.05:
+        return [img]
+
+    # Expandir ponto mais claro para encontrar o gutter completo
+    limiar = brilho_medio * 1.03
+    x_esq = x_mais_claro
+    x_dir = x_mais_claro
+    for x in range(x_mais_claro, x_inicio, -1):
+        if brilhos[x - x_inicio][1] >= limiar:
+            x_esq = x
+        else:
+            break
+    for x in range(x_mais_claro, x_fim):
+        if brilhos[x - x_inicio][1] >= limiar:
+            x_dir = x
+        else:
+            break
+
+    x_corte = (x_esq + x_dir) // 2
+    col_esq = img.crop((0, 0, x_corte, altura))
+    col_dir = img.crop((x_corte, 0, largura, altura))
+    return [col_esq, col_dir]
 
 
 def detectar_layout(pagina) -> dict:
@@ -425,7 +480,7 @@ def revisar_com_claude(img_pil, questoes_com_problema: list[dict],
     try:
         resposta = client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=4096,
+            max_tokens=8192,
             messages=[{
                 "role": "user",
                 "content": [
@@ -513,6 +568,16 @@ def carregar_exemplos_correcao(max_exemplos: int = 6) -> str:
             partes.append(f"  comando errado:   \"{orig.get('command', '')}\"")
             partes.append(f"  comando correto:  \"{corr.get('command', '')}\"")
 
+        if "content" in campos:
+            def _resumir_content(blocos):
+                textos = [b.get("value", "") or b.get("caption", "") for b in blocos if isinstance(b, dict)]
+                return " | ".join(t[:80] for t in textos if t)
+            orig_content = _resumir_content(orig.get("content", []))
+            corr_content = _resumir_content(corr.get("content", []))
+            if orig_content != corr_content:
+                partes.append(f"  conteúdo errado:  [{orig_content[:200]}]")
+                partes.append(f"  conteúdo correto: [{corr_content[:200]}]")
+
         if "alternatives" in campos:
             orig_alts = orig.get("alternatives", [])
             corr_alts = corr.get("alternatives", [])
@@ -532,7 +597,11 @@ def carregar_exemplos_correcao(max_exemplos: int = 6) -> str:
 
 def log(msg: str, nivel: str = "info"):
     prefixos = {"info": "  ->", "ok": "  [OK]", "warn": "  [!]", "erro": "  [X]", "titulo": "\n>>"}
-    print(f"{prefixos.get(nivel, '  ')} {msg}", flush=True)
+    texto = f"{prefixos.get(nivel, '  ')} {msg}"
+    try:
+        print(texto, flush=True)
+    except UnicodeEncodeError:
+        print(texto.encode("ascii", errors="replace").decode("ascii"), flush=True)
 
 
 # ─── Chamadas à API ───────────────────────────────────────────────────────────
@@ -709,29 +778,168 @@ def processar_pagina(client: OpenAI, conteudo, num_pagina: int, modo: str = "tex
 
 # ─── Gabarito ─────────────────────────────────────────────────────────────────
 
-def carregar_gabarito(caminho: str) -> dict[str, str]:
+def _visao_gabarito(pdf_path: str, caderno: str) -> dict[str, str]:
+    """
+    Extrai gabarito de PDF via GPT Vision, processando todas as páginas.
+    Entende o formato ENEM: Linguagens tem colunas INGLÊS/ESPANHOL (Q1-5 diferentes),
+    Ciências Humanas tem coluna única. Retorna chaves como "6", "46", "1-en", "1-es".
+    """
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        log("OPENAI_API_KEY não configurada — gabarito por visão indisponível", "warn")
+        return {}
+    try:
+        doc = fitz.open(pdf_path)
+        num_paginas = len(doc)
+        client_gab = OpenAI(api_key=api_key)
+        resultado = {}
+
+        for idx in range(num_paginas):
+            pagina_img = _renderizar_pagina_fitz(doc[idx])
+            img_b64 = imagem_para_base64(pagina_img)
+            resposta = client_gab.chat.completions.create(
+                model=MODELO_PRIMARIO,
+                max_tokens=2048,
+                response_format={"type": "json_object"},
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{img_b64}", "detail": "high"}
+                        },
+                        {
+                            "type": "text",
+                            "text": (
+                                f"Esta imagem é um gabarito do ENEM (página {idx + 1} de {num_paginas}), caderno {caderno}.\n"
+                                "Regras de extração:\n"
+                                "1. Tabela de LINGUAGENS: tem subcoluna INGLÊS e ESPANHOL.\n"
+                                "   - Para questões onde as respostas INGLÊS e ESPANHOL são IGUAIS: use chave '\"N\"' (ex: '\"6\"': 'C').\n"
+                                "   - Para questões onde são DIFERENTES (normalmente Q1-5): use chaves '\"N-en\"' e '\"N-es\"' separadas.\n"
+                                "2. Tabela de CIÊNCIAS HUMANAS ou qualquer outra com coluna única: use chave '\"N\"'.\n"
+                                "3. Se a página não contiver gabarito, retorne objeto vazio.\n"
+                                "Retorne APENAS JSON no formato:\n"
+                                "{\"gabarito\": {\"1-en\": \"A\", \"1-es\": \"A\", \"2-en\": \"A\", \"2-es\": \"C\", \"6\": \"C\", \"46\": \"D\", ...}}"
+                            )
+                        }
+                    ]
+                }]
+            )
+            dados = json.loads(resposta.choices[0].message.content)
+            gab_pagina = dados.get("gabarito", {})
+            if isinstance(gab_pagina, dict):
+                for chave, letra in gab_pagina.items():
+                    letra = str(letra).upper()
+                    if letra in LETRAS:
+                        resultado[str(chave)] = letra
+            elif isinstance(gab_pagina, list):
+                # fallback: lista de pares [num, letra]
+                for par in gab_pagina:
+                    if len(par) == 2:
+                        num = str(par[0]).lstrip("0") or "0"
+                        letra = str(par[1]).upper()
+                        if letra in LETRAS:
+                            resultado[num] = letra
+
+        doc.close()
+        return resultado
+    except Exception as e:
+        log(f"Erro ao extrair gabarito por visão: {e}", "warn")
+        return {}
+
+
+def _parsear_texto_gabarito(texto: str, caderno: str) -> dict[str, str]:
+    """
+    Tenta parsear texto extraído de gabarito (TXT ou PDF digital).
+    Formato ENEM: Linguagens tem 3 colunas (QUESTÃO | INGLÊS | ESPANHOL),
+    Ciências Humanas tem 2 colunas (QUESTÃO | GABARITO).
+    Retorna chaves "N", "N-en", "N-es".
+    """
+    gabarito = {}
+
+    # Modo atual da tabela: None, "linguagens" ou "simples"
+    modo = None
+    linhas = texto.splitlines()
+
+    for linha in linhas:
+        linha = linha.strip()
+        if not linha:
+            continue
+
+        linha_upper = linha.upper()
+
+        # Detectar cabeçalho da tabela de Linguagens (tem INGLÊS e ESPANHOL)
+        if "INGL" in linha_upper and "ESPANH" in linha_upper:
+            modo = "linguagens"
+            continue
+
+        # Detectar cabeçalho de tabela simples (GABARITO sem subdivisão)
+        if "GABARITO" in linha_upper and "INGL" not in linha_upper:
+            modo = "simples"
+            continue
+
+        # Ignorar linhas de cabeçalho de área (LINGUAGENS, CIÊNCIAS, etc.)
+        if any(k in linha_upper for k in ("LINGUAGENS", "CIÊNCIAS", "HUMANIDADES", "MATEMÁTICA", "NATUREZA", "QUESTÃO")):
+            continue
+
+        partes = linha.replace(":", " ").replace(",", " ").split()
+        if len(partes) < 2:
+            continue
+
+        # Primeiro token deve ser número
+        token0 = partes[0].lstrip("0")
+        if not token0.isdigit():
+            continue
+
+        num = token0 or "0"
+
+        if modo == "linguagens" and len(partes) >= 3:
+            # 3 colunas: num, ingles, espanhol
+            letra_en = partes[1].upper()
+            letra_es = partes[2].upper()
+            if letra_en in LETRAS and letra_es in LETRAS:
+                if letra_en == letra_es:
+                    gabarito[num] = letra_en  # mesma resposta, chave simples
+                else:
+                    gabarito[f"{num}-en"] = letra_en
+                    gabarito[f"{num}-es"] = letra_es
+        elif len(partes) >= 2:
+            # 2 colunas: num, letra
+            letra = partes[1].upper()
+            if letra in LETRAS:
+                gabarito[num] = letra
+
+    return gabarito
+
+
+def carregar_gabarito(caminho: str, caderno: str = "Azul") -> dict[str, str]:
     gabarito = {}
     if not caminho or not Path(caminho).exists():
         return gabarito
 
-    if caminho.lower().endswith(".pdf"):
-        doc = fitz.open(caminho)
-        texto = "\n".join(pagina.get_text() for pagina in doc)
+    eh_pdf = caminho.lower().endswith(".pdf")
+
+    if eh_pdf:
+        doc  = fitz.open(caminho)
+        texto = "\n".join(p.get_text() for p in doc)
         doc.close()
     else:
         texto = Path(caminho).read_text(encoding="utf-8")
 
-    for linha in texto.splitlines():
-        linha = linha.strip()
-        if not linha:
-            continue
-        partes = linha.replace(":", " ").replace(",", " ").replace("-", " ").split()
-        if len(partes) >= 2:
-            num, letra = partes[0].lstrip("0") or "0", partes[1].upper()
-            if letra in LETRAS:
-                gabarito[num] = letra
+    # 1. Tentar parsear o texto (funciona para TXT e PDFs digitais bem formatados)
+    if texto.strip():
+        gabarito = _parsear_texto_gabarito(texto, caderno)
 
-    log(f"Gabarito carregado: {len(gabarito)} respostas", "ok")
+    # 2. Se texto falhou e é PDF → visão como fallback
+    if not gabarito and eh_pdf:
+        log(f"Gabarito — texto não parseável, usando visão (caderno {caderno})...", "info")
+        gabarito = _visao_gabarito(caminho, caderno)
+
+    if gabarito:
+        amostra = list(gabarito.items())[:5]
+        log(f"Gabarito carregado: {len(gabarito)} respostas. Amostra: {amostra}", "ok")
+    else:
+        log("Gabarito carregado: 0 respostas — verifique o formato do arquivo", "warn")
     return gabarito
 
 
@@ -798,24 +1006,43 @@ def montar_json(questoes_por_pagina: list[tuple[int, list[dict]]],
 
     for _num_pag, questoes in questoes_por_pagina:
         for q in questoes:
-            numero = str(q.get("numero", "")).lstrip("0") or "0"
+            numero_base = str(q.get("numero", "")).lstrip("0") or "0"
             # Q1-Q5 aparecem duas vezes no caderno (inglês e espanhol) — adicionar sufixo
             area = q.get("area", "")
             if area == "ingles":
-                numero = f"{numero}-en"
+                numero = f"{numero_base}-en"
             elif area == "espanhol":
-                numero = f"{numero}-es"
-            letra_correta = gabarito.get(numero, "")
+                numero = f"{numero_base}-es"
+            else:
+                numero = numero_base
+            # Busca gabarito: tenta chave com sufixo de idioma, depois chave simples
+            letra_correta = gabarito.get(numero) or gabarito.get(numero_base, "")
             correct = LETRAS.get(letra_correta)  # None quando sem gabarito
+
+            content = _montar_content(q)
+            command = _limpar(q.get("comando", ""))
+            needs_review = False
+
+            # Pós-processamento: se command vier vazio e o último bloco de content for texto,
+            # move automaticamente para command (padrão de erro mais comum do GPT em modo imagem)
+            if not command and content and content[-1].get("type") == "text":
+                command = content[-1].get("value", "").strip()
+                content = content[:-1]
+                needs_review = True  # auto-corrigido, usuário deve conferir
+                log(f"  Q{numero}: comando movido do content -> command | marcada para revisao", "warn")
+            elif not command:
+                needs_review = True  # command vazio sem texto para mover
+                log(f"  Q{numero}: command vazio -> marcada para revisao", "warn")
 
             resultado.append({
                 "exam":            f"ENEM {ano} – {dia}º Dia – Caderno {caderno}",
                 "number":          q.get("numero", ""),
                 "area":            q.get("area", ""),
-                "content":         _montar_content(q),
-                "command":         _limpar(q.get("comando", "")),
+                "content":         content,
+                "command":         command,
                 "alternatives":    [{"text": a, "image": None} for a in q.get("alternativas", ["", "", "", "", ""])],
                 "correct":         correct,
+                "needs_review":    needs_review,
                 # Classificação taxonômica (preenchida em passo separado)
                 "disciplina":      None,
                 "topic":           None,
@@ -826,6 +1053,15 @@ def montar_json(questoes_por_pagina: list[tuple[int, list[dict]]],
             })
 
     resultado.sort(key=lambda q: int(q["number"]) if str(q["number"]).isdigit() else 0)
+
+    if gabarito:
+        acertos = sum(1 for q in resultado if q.get("correct") is not None)
+        sem = len(resultado) - acertos
+        log(f"Gabarito aplicado: {acertos}/{len(resultado)} questões com resposta correta identificada", "ok")
+        if sem:
+            nums_sem = [q["number"] for q in resultado if q.get("correct") is None]
+            log(f"  Sem gabarito: questoes {nums_sem[:10]}{'...' if len(nums_sem) > 10 else ''}", "warn")
+
     return resultado
 
 
@@ -953,7 +1189,7 @@ def processar_prova(pdf_path: str, ano: int, dia: int, caderno: str,
     log(f"Pulando capa e contra-capa — {len(indices_proc)} páginas para processar", "info")
 
     # 2. Carregar gabarito
-    gabarito = carregar_gabarito(gabarito_path)
+    gabarito = carregar_gabarito(gabarito_path, caderno)
 
     # 3. Processar páginas
     modelo_log = MODELO_FALLBACK if modo == "hibrido" else MODELO_PRIMARIO
@@ -1034,7 +1270,19 @@ def processar_prova(pdf_path: str, ano: int, dia: int, caderno: str,
             else:
                 questoes, usos = processar_pagina(client, texto_pag, idx_pagina + 1, modo="texto")
         else:
-            questoes, usos = processar_pagina(client, paginas_img[seq], idx_pagina + 1, modo="imagem")
+            img_pag = paginas_img[seq]
+            colunas = _detectar_e_dividir_colunas(img_pag)
+            if len(colunas) == 2:
+                log("Layout 2 colunas detectado — processando coluna por coluna", "info")
+                questoes, usos = [], []
+                for i, col in enumerate(colunas):
+                    nome_col = "esquerda" if i == 0 else "direita"
+                    log(f"Coluna {nome_col}...", "info")
+                    q_col, u_col = processar_pagina(client, col, idx_pagina + 1, modo="imagem")
+                    questoes.extend(q_col)
+                    usos.extend(u_col)
+            else:
+                questoes, usos = processar_pagina(client, img_pag, idx_pagina + 1, modo="imagem")
 
         for uso in usos:
             preco = PRECOS.get(uso["modelo"], {"input": 0, "output": 0})
