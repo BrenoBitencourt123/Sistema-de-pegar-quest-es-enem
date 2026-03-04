@@ -24,7 +24,7 @@ from fastapi.responses import StreamingResponse
 
 # Carregar config.txt antes de importar o extrator
 sys.path.insert(0, str(Path(__file__).parent))
-from extrator import carregar_config, processar_prova
+from extrator import carregar_config, processar_prova, detectar_layout, extrair_texto_ordenado
 
 carregar_config()
 
@@ -216,6 +216,53 @@ def contar_correcoes():
         return {"total": len(historico)}
     except Exception:
         return {"total": 0}
+
+
+@app.post("/preview-texto")
+async def preview_texto(pdf: UploadFile = File(...)):
+    """
+    Extrai o texto de cada página do PDF usando PyMuPDF + detecção de layout,
+    SEM chamar nenhuma IA. Útil para inspecionar o que seria enviado ao GPT.
+    """
+    import fitz
+    import re
+
+    pdf_bytes = await pdf.read()
+    paginas = []
+
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        for i, pagina in enumerate(doc):
+            layout = detectar_layout(pagina)
+            texto  = extrair_texto_ordenado(pagina, layout)
+            n_marc = len(re.findall(r'\[[ABCDE]\] ', texto))
+
+            debug = {"colunas": layout["colunas"]}
+            if layout["colunas"] == 2:
+                mid = layout.get("mid", pagina.rect.width / 2)
+                debug["mid_px"]  = round(mid, 1)
+                debug["mid_pct"] = round(mid / pagina.rect.width * 100, 1)
+                try:
+                    blocos = [b for b in pagina.get_text("dict")["blocks"] if b.get("type") == 0]
+                    debug["blocos_esq"] = sum(1 for b in blocos if (b["bbox"][0] + b["bbox"][2]) / 2 < mid)
+                    debug["blocos_dir"] = sum(1 for b in blocos if (b["bbox"][0] + b["bbox"][2]) / 2 >= mid)
+                    debug["total_blocos"] = len(blocos)
+                except Exception:
+                    pass
+
+            paginas.append({
+                "pagina":       i + 1,
+                "colunas":      layout["colunas"],
+                "n_marcadores": n_marc,
+                "chars":        len(texto),
+                "debug":        debug,
+                "texto":        texto,
+            })
+        doc.close()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao processar PDF: {e}")
+
+    return {"paginas": paginas}
 
 
 @app.get("/")

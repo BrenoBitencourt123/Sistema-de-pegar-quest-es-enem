@@ -310,8 +310,8 @@ def detectar_layout(pagina) -> dict:
     except Exception:
         return {"colunas": 1, "imagens": []}
 
-    # Coordenadas x0 de blocos de texto (type=0)
-    xs = [b["bbox"][0] for b in blocos if b.get("type") == 0]
+    # Centros horizontais dos blocos de texto (type=0) — mais robusto que x0
+    xs = [(b["bbox"][0] + b["bbox"][2]) / 2 for b in blocos if b.get("type") == 0]
 
     # Heurística bimodal: blocos concentrados em ambas as metades → duas colunas
     esq = sum(1 for x in xs if x < largura * 0.45)
@@ -329,9 +329,18 @@ def detectar_layout(pagina) -> dict:
         pass
 
     if duas_colunas:
-        mid = largura / 2
+        # Encontrar o gap real entre colunas pelo maior intervalo entre centros consecutivos
+        xs_sorted = sorted(xs)
+        mid = largura / 2  # fallback
+        if len(xs_sorted) >= 4:
+            gaps = [(xs_sorted[i+1] - xs_sorted[i], i) for i in range(len(xs_sorted) - 1)]
+            max_gap_val, max_gap_idx = max(gaps)
+            if max_gap_val > largura * 0.08:  # gap real de pelo menos 8% da largura
+                mid = (xs_sorted[max_gap_idx] + xs_sorted[max_gap_idx + 1]) / 2
+                mid = max(largura * 0.30, min(largura * 0.70, mid))
         return {
             "colunas": 2,
+            "mid":      mid,
             "rect_esq": fitz.Rect(0, 0, mid, altura),
             "rect_dir": fitz.Rect(mid, 0, largura, altura),
             "imagens":  imagens,
@@ -384,9 +393,13 @@ def extrair_texto_ordenado(pagina, layout: dict) -> str:
         return ""
 
     if layout["colunas"] == 2:
-        mid  = pagina.rect.width / 2
-        esq  = sorted([b for b in blocos if b[0] <  mid], key=lambda b: (b[1], b[0]))
-        dir_ = sorted([b for b in blocos if b[0] >= mid], key=lambda b: (b[1], b[0]))
+        # Usar o mid calculado por detectar_layout() via maior gap entre colunas
+        largura = pagina.rect.width
+        mid = layout.get("mid", largura / 2)
+
+        def centro_x(b): return (b[0] + b[2]) / 2
+        esq  = sorted([b for b in blocos if centro_x(b) <  mid], key=lambda b: (b[1], b[0]))
+        dir_ = sorted([b for b in blocos if centro_x(b) >= mid], key=lambda b: (b[1], b[0]))
         partes = [t for *_, t in esq] + [t for *_, t in dir_]
     else:
         blocos.sort(key=lambda b: (b[1], b[0]))
@@ -798,8 +811,8 @@ def _visao_gabarito(pdf_path: str, caderno: str) -> dict[str, str]:
             pagina_img = _renderizar_pagina_fitz(doc[idx])
             img_b64 = imagem_para_base64(pagina_img)
             resposta = client_gab.chat.completions.create(
-                model=MODELO_PRIMARIO,
-                max_tokens=2048,
+                model=MODELO_FALLBACK,  # gpt-4o: mais confiável para leitura de tabelas
+                max_tokens=4096,
                 response_format={"type": "json_object"},
                 messages=[{
                     "role": "user",
@@ -1001,7 +1014,10 @@ def _montar_content(q: dict) -> list[dict]:
 
 def montar_json(questoes_por_pagina: list[tuple[int, list[dict]]],
                 gabarito: dict[str, str],
-                ano: int, dia: int, caderno: str) -> list[dict]:
+                ano: int, dia: int, caderno: str,
+                ja_logado: set | None = None) -> list[dict]:
+    if ja_logado is None:
+        ja_logado = set()
     resultado = []
 
     for _num_pag, questoes in questoes_por_pagina:
@@ -1029,10 +1045,14 @@ def montar_json(questoes_por_pagina: list[tuple[int, list[dict]]],
                 command = content[-1].get("value", "").strip()
                 content = content[:-1]
                 needs_review = True  # auto-corrigido, usuário deve conferir
-                log(f"  Q{numero}: comando movido do content -> command | marcada para revisao", "warn")
+                if numero not in ja_logado:
+                    log(f"  Q{numero}: comando movido do content -> command | marcada para revisao", "warn")
+                    ja_logado.add(numero)
             elif not command:
                 needs_review = True  # command vazio sem texto para mover
-                log(f"  Q{numero}: command vazio -> marcada para revisao", "warn")
+                if numero not in ja_logado:
+                    log(f"  Q{numero}: command vazio -> marcada para revisao", "warn")
+                    ja_logado.add(numero)
 
             resultado.append({
                 "exam":            f"ENEM {ano} – {dia}º Dia – Caderno {caderno}",
@@ -1191,6 +1211,9 @@ def processar_prova(pdf_path: str, ano: int, dia: int, caderno: str,
     # 2. Carregar gabarito
     gabarito = carregar_gabarito(gabarito_path, caderno)
 
+    # Set para deduplicar logs de anomalia entre chamadas parciais de montar_json
+    _ja_logado_anomalia: set[str] = set()
+
     # 3. Processar páginas
     modelo_log = MODELO_FALLBACK if modo == "hibrido" else MODELO_PRIMARIO
     log(f"Processando páginas com {modelo_log} (modo={modo})...", "titulo")
@@ -1327,12 +1350,12 @@ def processar_prova(pdf_path: str, ano: int, dia: int, caderno: str,
 
         # Enviar atualização parcial ao frontend após cada página
         if partial_cb and questoes_por_pagina:
-            parcial = montar_json(questoes_por_pagina, gabarito, ano, dia, caderno)
+            parcial = montar_json(questoes_por_pagina, gabarito, ano, dia, caderno, _ja_logado_anomalia)
             partial_cb(parcial)
 
         # Salvar progresso em disco a cada 5 páginas
         if (seq + 1) % 5 == 0 and questoes_por_pagina:
-            parcial = montar_json(questoes_por_pagina, gabarito, ano, dia, caderno)
+            parcial = montar_json(questoes_por_pagina, gabarito, ano, dia, caderno, _ja_logado_anomalia)
             Path(saida + ".parcial.json").write_text(
                 json.dumps(parcial, ensure_ascii=False, indent=2), encoding="utf-8"
             )
@@ -1341,7 +1364,7 @@ def processar_prova(pdf_path: str, ano: int, dia: int, caderno: str,
     doc.close()
 
     # 4. Resultado final (extração)
-    questoes_finais = montar_json(questoes_por_pagina, gabarito, ano, dia, caderno)
+    questoes_finais = montar_json(questoes_por_pagina, gabarito, ano, dia, caderno, _ja_logado_anomalia)
     Path(saida + ".parcial.json").unlink(missing_ok=True)
 
     log(f"Extração concluída! {len(questoes_finais)} questões", "titulo")
