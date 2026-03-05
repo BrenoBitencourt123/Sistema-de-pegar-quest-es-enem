@@ -38,11 +38,16 @@ export default function QuestionPreview({ question, onToggleReview }) {
         {/* Blocos de conteúdo */}
         {content.map((block, i) => {
           if (block.type === 'text') {
-            return block.value ? (
-              <p key={i} className="text-sm text-slate-700 leading-relaxed mb-4 whitespace-pre-wrap">
+            if (!block.value) return null
+            const fmt = block.format || {}
+            const colorClass = fmt.color === 'muted' ? 'text-slate-400 text-xs' : 'text-slate-700 text-sm'
+            const boldClass = fmt.bold ? 'font-bold' : ''
+            const alignClass = fmt.align === 'center' ? 'text-center' : fmt.align === 'right' ? 'text-right' : 'text-left'
+            return (
+              <p key={i} className={`leading-relaxed mb-4 whitespace-pre-wrap ${colorClass} ${boldClass} ${alignClass}`}>
                 {block.value}
               </p>
-            ) : null
+            )
           }
           if (block.type === 'image') {
             return block.data ? (

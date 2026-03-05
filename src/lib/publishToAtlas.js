@@ -52,7 +52,7 @@ export async function publicarQuestao(question) {
   const year      = extractYear(question.exam)
   const areaCode  = question.area?.toLowerCase() || ''
   const area      = AREA_MAP[areaCode] || areaCode || null
-  const idioma    = IDIOMAS.includes(areaCode) ? areaCode : null
+  const idioma    = question.foreign_language || (IDIOMAS.includes(areaCode) ? areaCode : '') || ''
 
   // Monta statement com placeholders {{IMG_N}} e faz upload das imagens de conteúdo
   let statement = ''
@@ -95,20 +95,20 @@ export async function publicarQuestao(question) {
   const correctAnswer = LETTERS[correctIndex] || 'A'
 
   const record = {
-    user_id:         ADMIN_USER_ID,
+    user_id:        ADMIN_USER_ID,
     year,
     area,
     statement,
-    images:          imageUrls,
+    images:         imageUrls,
     alternatives,
-    correct_answer:  correctAnswer,
-    question_number: parseInt(question.number) || null,
-    ...(idioma && { foreign_language: idioma }),
+    correct_answer: correctAnswer,
+    number:         parseInt(question.number) || null,
+    foreign_language: idioma,
   }
 
   const { data, error } = await supabase
     .from('questions')
-    .insert(record)
+    .upsert(record, { onConflict: 'user_id,number,year,foreign_language' })
     .select()
     .single()
 

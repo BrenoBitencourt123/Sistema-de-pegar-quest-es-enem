@@ -134,7 +134,7 @@ Retorne SOMENTE um JSON no formato:
       "numero": "1",
       "area": "linguagens|humanas|natureza|matematica|ingles|espanhol",
       "conteudo": [
-        { "tipo": "texto", "valor": "texto de apoio ou contexto..." },
+        { "tipo": "texto", "valor": "texto de apoio ou contexto...", "formato": { "negrito": false, "cor": "padrao", "alinhamento": "esquerda" } },
         { "tipo": "imagem", "legenda": "legenda da figura se houver", "tem_imagem": true },
         { "tipo": "texto", "valor": "texto intermediário entre imagens se houver..." }
       ],
@@ -147,6 +147,11 @@ Retorne SOMENTE um JSON no formato:
 Campos:
 - conteudo: array de blocos ordenados que formam o corpo da questão, ANTES das alternativas e do comando.
   * bloco "texto": trecho de texto/contexto/enunciado. Pode haver múltiplos blocos de texto.
+    - Campo opcional "formato": { "negrito": bool, "cor": "padrao"|"acinzentado", "alinhamento": "esquerda"|"centro"|"direita" }
+    - Usar "negrito": true para títulos, cabeçalhos ou texto em destaque na prova
+    - Usar "cor": "acinzentado" para referências bibliográficas, fontes, créditos (ex: "Disponível em: ...", "AUTOR, Nome. Título...")
+    - Usar "alinhamento": "direita" para texto visivelmente alinhado à direita na página (ex: autoria de poema, fonte de citação)
+    - Se não houver formatação especial, omitir o campo "formato" ou deixar com valores padrão
   * bloco "imagem": indica presença de figura/gráfico/tabela/imagem no ponto correspondente do layout. Pode haver múltiplas imagens.
   * A ORDEM dos blocos deve refletir a ordem visual na página (texto → imagem → texto → imagem, etc.)
   * Se não houver texto de contexto, "conteudo" pode ser array vazio [] ou conter só blocos de imagem.
@@ -987,7 +992,20 @@ def _montar_content(q: dict) -> list[dict]:
             if tipo == "texto":
                 valor = _limpar(bloco.get("valor", ""))
                 if valor:
-                    content.append({"type": "text", "value": valor})
+                    bloco_texto = {"type": "text", "value": valor}
+                    fmt_raw = bloco.get("formato", {})
+                    if fmt_raw:
+                        cor_map = {"acinzentado": "muted", "padrao": "default"}
+                        align_map = {"esquerda": "left", "centro": "center", "direita": "right"}
+                        fmt = {
+                            "bold":  bool(fmt_raw.get("negrito", False)),
+                            "color": cor_map.get(fmt_raw.get("cor", "padrao"), "default"),
+                            "align": align_map.get(fmt_raw.get("alinhamento", "esquerda"), "left"),
+                        }
+                        # Só inclui format se tiver algo diferente do padrão
+                        if fmt["bold"] or fmt["color"] != "default" or fmt["align"] != "left":
+                            bloco_texto["format"] = fmt
+                    content.append(bloco_texto)
             elif tipo == "imagem":
                 content.append({
                     "type":      "image",

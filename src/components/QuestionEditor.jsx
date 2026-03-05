@@ -109,11 +109,68 @@ function ImageBlock({ block, onChange, onRemove, onMoveUp, onMoveDown, canMoveUp
 
 // ─── Bloco de Texto ───────────────────────────────────────────────────────────
 
+function FmtBtn({ active, onClick, title, children }) {
+  return (
+    <button
+      onMouseDown={e => { e.preventDefault(); onClick() }}
+      title={title}
+      className={`w-5 h-5 flex items-center justify-center rounded text-[11px] transition ${
+        active
+          ? 'bg-violet-100 text-violet-700'
+          : 'text-slate-400 hover:text-violet-600 hover:bg-violet-50'
+      }`}
+    >
+      {children}
+    </button>
+  )
+}
+
 function TextBlock({ block, onChange, onRemove, onMoveUp, onMoveDown, canMoveUp, canMoveDown }) {
+  const fmt = block.format || {}
+  const bold = fmt.bold || false
+  const color = fmt.color || 'default'
+  const align = fmt.align || 'left'
+
+  function setFormat(patch) {
+    onChange({ ...block, format: { ...fmt, ...patch } })
+  }
+
   return (
     <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
       <div className="flex items-center justify-between px-3 py-1.5 bg-slate-50 border-b border-slate-100">
-        <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Texto</span>
+        {/* Formatação */}
+        <div className="flex items-center gap-0.5">
+          <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mr-1.5">Texto</span>
+          <span className="text-slate-200 mr-1">|</span>
+          {/* Negrito */}
+          <FmtBtn active={bold} onClick={() => setFormat({ bold: !bold })} title="Negrito">
+            <span className="font-bold">B</span>
+          </FmtBtn>
+          {/* Cor acinzentada */}
+          <FmtBtn active={color === 'muted'} onClick={() => setFormat({ color: color === 'muted' ? 'default' : 'muted' })} title="Texto acinzentado (citação/fonte)">
+            <span className={color === 'muted' ? 'text-slate-400' : ''}>A</span>
+          </FmtBtn>
+          <span className="text-slate-200 mx-0.5">|</span>
+          {/* Alinhamento esquerda */}
+          <FmtBtn active={align === 'left'} onClick={() => setFormat({ align: 'left' })} title="Alinhar à esquerda">
+            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h10M4 14h16M4 18h10" />
+            </svg>
+          </FmtBtn>
+          {/* Alinhamento centro */}
+          <FmtBtn active={align === 'center'} onClick={() => setFormat({ align: 'center' })} title="Centralizar">
+            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M7 10h10M4 14h16M7 18h10" />
+            </svg>
+          </FmtBtn>
+          {/* Alinhamento direita */}
+          <FmtBtn active={align === 'right'} onClick={() => setFormat({ align: 'right' })} title="Alinhar à direita">
+            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M10 10h10M4 14h16M10 18h10" />
+            </svg>
+          </FmtBtn>
+        </div>
+        {/* Controles de bloco */}
         <div className="flex items-center gap-1">
           <button onClick={onMoveUp} disabled={!canMoveUp} title="Mover para cima"
             className="w-5 h-5 flex items-center justify-center rounded text-slate-400 hover:text-violet-600 hover:bg-violet-50 disabled:opacity-30 disabled:cursor-not-allowed transition">
@@ -315,6 +372,35 @@ export default function QuestionEditor({ question, onChange }) {
             value={question.number}
             onChange={e => onChange({ ...question, number: e.target.value })}
           />
+        </div>
+      </div>
+
+      {/* Idioma estrangeiro */}
+      <div>
+        <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">
+          Idioma estrangeiro
+        </label>
+        <div className="flex gap-2">
+          {[
+            { value: '', label: 'Nenhum' },
+            { value: 'ingles', label: 'Inglês' },
+            { value: 'espanhol', label: 'Espanhol' },
+          ].map(opt => {
+            const active = (question.foreign_language || '') === opt.value
+            return (
+              <button
+                key={opt.value}
+                onClick={() => onChange({ ...question, foreign_language: opt.value })}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition ${
+                  active
+                    ? 'bg-violet-600 border-violet-600 text-white'
+                    : 'bg-white border-slate-200 text-slate-500 hover:border-violet-400 hover:text-violet-600'
+                }`}
+              >
+                {opt.label}
+              </button>
+            )
+          })}
         </div>
       </div>
 
