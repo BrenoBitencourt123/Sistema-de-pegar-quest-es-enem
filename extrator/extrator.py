@@ -177,6 +177,8 @@ Regras gerais:
 6. NUNCA invente ou complete texto que não está na página
 7. Preserve acentuação e formatação original
 8. NUNCA copie exemplos do prompt — se um campo não tiver conteúdo visível, deixe vazio
+9. Alternativas matemáticas: preserve expressões como unidade única — frações ("1/45", "9!/2"), fatoriais ("9!", "4! 5!", "2 × 4! 5!"), potências, raízes. NUNCA separe numerador e denominador como alternativas distintas.
+10. Alternativas de valor único: quando as alternativas são apenas números simples (1, 2, 3, 4, 5) ou expressões curtas, são tão válidas quanto textos longos. Não as confunda com números que aparecem no enunciado ou na figura da questão.
 
 Regras para questões de língua estrangeira (inglês/espanhol):
 - O texto de apoio (artigo, conto, poema, crônica) INTEIRO vai em conteudo[] como bloco "texto"
@@ -417,13 +419,18 @@ def extrair_texto_ordenado(pagina, layout: dict) -> str:
 
 
 def validar_questao(q: dict) -> bool:
-    # comando pode estar em imagem — não obrigatório para validação
-    # conteudo pode ser array vazio — também válido
-    return (
-        q.get("numero") and
-        isinstance(q.get("alternativas"), list) and
-        len(q["alternativas"]) == 5
-    )
+    # Aceita questões com 2-5 alternativas. Com < 5 ou > 5 são marcadas para revisão,
+    # mas não rejeitadas — melhor ter a questão incompleta do que perdê-la.
+    # Rejeita apenas: sem número, sem alternativas, ou lista inválida.
+    if not q.get("numero"):
+        return False
+    alts = q.get("alternativas")
+    if not isinstance(alts, list) or len(alts) == 0:
+        return False
+    # Marca para revisão se contagem errada, mas aceita
+    if len(alts) != 5:
+        q["needs_review"] = True
+    return True
 
 
 def detectar_anomalias(questoes: list[dict]) -> dict[str, list[str]]:
@@ -760,20 +767,19 @@ def processar_pagina(client: OpenAI, conteudo, num_pagina: int, modo: str = "tex
             validas = []
             for q in questoes:
                 if validar_questao(q):
+                    alts = q.get("alternativas", [])
+                    if len(alts) != 5:
+                        preview_alts = " | ".join(str(a)[:40] for a in alts[:3])
+                        log(f"  Q{q.get('numero','?')} aceita com revisão: alternativas={len(alts)} — [{preview_alts}]", "warn")
                     validas.append(q)
                 else:
                     motivo = []
                     if not q.get("numero"):
                         motivo.append("sem número")
                     alts = q.get("alternativas", [])
-                    if not isinstance(alts, list) or len(alts) != 5:
-                        n_alts = len(alts) if isinstance(alts, list) else "inválido"
-                        motivo.append(f"alternativas={n_alts}")
-                        if isinstance(alts, list) and alts:
-                            preview_alts = " | ".join(str(a)[:40] for a in alts[:3])
-                            log(f"  Q{q.get('numero','?')} rejeitada: {', '.join(motivo)} — conteúdo: [{preview_alts}]", "warn")
-                        else:
-                            log(f"  Q{q.get('numero','?')} rejeitada: {', '.join(motivo) or 'inválida'} — GPT não extraiu alternativas (possível questão com alternativas em imagem ou texto não chegou completo)", "warn")
+                    if not isinstance(alts, list) or len(alts) == 0:
+                        motivo.append("alternativas=0")
+                        log(f"  Q{q.get('numero','?')} rejeitada: {', '.join(motivo) or 'inválida'} — GPT não extraiu alternativas (possível questão com alternativas em imagem ou texto não chegou completo)", "warn")
                     else:
                         log(f"  Q{q.get('numero','?')} rejeitada: {', '.join(motivo) or 'inválida'}", "warn")
 

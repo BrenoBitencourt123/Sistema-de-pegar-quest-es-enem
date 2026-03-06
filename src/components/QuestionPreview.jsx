@@ -1,5 +1,23 @@
 const LETTERS = ['A', 'B', 'C', 'D', 'E']
 
+// Converte ^{-1}, ^(-1), ^x, _{2}, _(n) em <sup>/<sub>
+function renderMath(text) {
+  if (!text) return text
+  const re = /\^[({]([^)}]+)[)}]|\^([\w\-+]+)|_[({]([^)}]+)[)}]|_([\w]+)/g
+  const parts = []
+  let last = 0
+  let m
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) parts.push(text.slice(last, m.index))
+    const content = m[1] ?? m[2] ?? m[3] ?? m[4]
+    if (m[0].startsWith('^')) parts.push(<sup key={m.index}>{content}</sup>)
+    else parts.push(<sub key={m.index}>{content}</sub>)
+    last = m.index + m[0].length
+  }
+  if (last < text.length) parts.push(text.slice(last))
+  return parts.length > 1 ? parts : text
+}
+
 export default function QuestionPreview({ question, onToggleReview }) {
   const total = 90
   const content = question.content || []
@@ -45,7 +63,7 @@ export default function QuestionPreview({ question, onToggleReview }) {
             const alignClass = fmt.align === 'center' ? 'text-center' : fmt.align === 'right' ? 'text-right' : 'text-left'
             return (
               <p key={i} className={`leading-relaxed mb-4 whitespace-pre-wrap ${colorClass} ${boldClass} ${alignClass}`}>
-                {block.value}
+                {renderMath(block.value)}
               </p>
             )
           }
@@ -76,7 +94,7 @@ export default function QuestionPreview({ question, onToggleReview }) {
         {/* Comando */}
         {question.command && (
           <p className="text-sm text-slate-800 font-medium leading-relaxed mb-5">
-            {question.command}
+            {renderMath(question.command)}
           </p>
         )}
 
@@ -109,7 +127,7 @@ export default function QuestionPreview({ question, onToggleReview }) {
                 <div className="flex flex-col gap-1.5 flex-1">
                   {altObj.text && (
                     <span className={`text-sm leading-relaxed ${isCorrect ? 'text-emerald-800 font-medium' : 'text-slate-700'}`}>
-                      {altObj.text}
+                      {renderMath(altObj.text)}
                     </span>
                   )}
                   {altObj.image && (

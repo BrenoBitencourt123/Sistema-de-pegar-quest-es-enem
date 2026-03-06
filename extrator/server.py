@@ -24,7 +24,7 @@ from fastapi.responses import StreamingResponse
 
 # Carregar config.txt antes de importar o extrator
 sys.path.insert(0, str(Path(__file__).parent))
-from extrator import carregar_config, processar_prova, detectar_layout, extrair_texto_ordenado, carregar_gabarito
+from extrator import carregar_config, processar_prova, detectar_layout, extrair_texto_ordenado, carregar_gabarito, classificar_questoes
 
 carregar_config()
 
@@ -289,6 +289,59 @@ async def aplicar_gabarito(
             pass
 
     return {"gabarito": resultado}
+
+
+class QuestaoSimples(BaseModel):
+    number: str
+    area: str = "matematica"
+    command: str = ""
+    alternatives: list  # [str | {"text": str}]
+
+
+class ClassificarPayload(BaseModel):
+    questoes: list[QuestaoSimples]
+
+
+@app.post("/classificar")
+async def classificar(payload: ClassificarPayload):
+    """
+    Recebe questões no formato do editor e retorna campos de classificação
+    (disciplina, topic, subtopic, skills, cognitive_level, difficulty).
+    """
+    from openai import OpenAI
+
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="OPENAI_API_KEY não configurada")
+
+    client = OpenAI(api_key=api_key)
+
+    # Converter para o formato esperado por classificar_questoes()
+    questoes_fmt = []
+    for q in payload.questoes:
+        alts = []
+        for a in q.alternatives:
+            if isinstance(a, dict):
+                alts.append({"text": a.get("text", "")})
+            else:
+                alts.append({"text": str(a)})
+        questoes_fmt.append({
+            "number": q.number,
+            "area": q.area,
+            "command": q.command,
+            "alternatives": alts,
+        })
+
+    classificadas, _ = classificar_questoes(questoes_fmt, client)
+
+    campos = ["disciplina", "topic", "subtopic", "skills", "cognitive_level", "difficulty"]
+    resultado = {}
+    for q in classificadas:
+        cls = {c: q.get(c) for c in campos if q.get(c) is not None}
+        if cls:
+            resultado[str(q["number"])] = cls
+
+    return {"classificacoes": resultado}
 
 
 @app.get("/")

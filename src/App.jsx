@@ -303,6 +303,42 @@ export default function App() {
     setBatchResult({ ok, erros, total: elegíveis.length })
   }
 
+  const [classificandoState, setClassificandoState] = useState('idle') // 'idle' | 'loading'
+
+  async function handleClassificar() {
+    const elegiveis = questions.filter(q => q.number && q.command && q.alternatives.length >= 2)
+    if (elegiveis.length === 0) {
+      alert('Nenhuma questão elegível para classificação.\nVerifique se possuem número, comando e ao menos 2 alternativas.')
+      return
+    }
+    setClassificandoState('loading')
+    try {
+      const res = await fetch(`${BACKEND}/classificar`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          questoes: elegiveis.map(q => ({
+            number: q.number,
+            area: q.area || 'matematica',
+            command: q.command,
+            alternatives: q.alternatives,
+          })),
+        }),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const { classificacoes } = await res.json()
+      setQuestions(prev => prev.map(q => {
+        const cls = classificacoes[String(q.number)]
+        return cls ? { ...q, ...cls } : q
+      }))
+      alert(`${Object.keys(classificacoes).length} questões classificadas com sucesso!`)
+    } catch (err) {
+      alert(`Erro ao classificar: ${err.message}`)
+    } finally {
+      setClassificandoState('idle')
+    }
+  }
+
   async function handleCarregarGabarito(file) {
     if (!file) return
     // Detecta o caderno a partir do campo exam da primeira questão
@@ -551,6 +587,27 @@ export default function App() {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
               </svg>
               <span className="hidden sm:inline">Exportar JSON</span>
+            </button>
+
+            {/* Classificar todas */}
+            <button
+              onClick={handleClassificar}
+              disabled={classificandoState === 'loading'}
+              className="flex items-center gap-1.5 text-xs font-semibold text-white bg-violet-500 hover:bg-violet-600 disabled:opacity-60 disabled:cursor-not-allowed px-3 py-2 rounded-lg transition shadow-sm"
+            >
+              {classificandoState === 'loading' ? (
+                <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+                </svg>
+              ) : (
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                </svg>
+              )}
+              <span className="hidden sm:inline">
+                {classificandoState === 'loading' ? 'Classificando...' : 'Classificar tudo'}
+              </span>
             </button>
 
             {/* Publicar todas no Atlas */}
