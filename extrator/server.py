@@ -24,7 +24,7 @@ from fastapi.responses import StreamingResponse
 
 # Carregar config.txt antes de importar o extrator
 sys.path.insert(0, str(Path(__file__).parent))
-from extrator import carregar_config, processar_prova, detectar_layout, extrair_texto_ordenado
+from extrator import carregar_config, processar_prova, detectar_layout, extrair_texto_ordenado, carregar_gabarito
 
 carregar_config()
 
@@ -263,6 +263,32 @@ async def preview_texto(pdf: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Erro ao processar PDF: {e}")
 
     return {"paginas": paginas}
+
+
+@app.post("/gabarito")
+async def aplicar_gabarito(
+    gabarito: UploadFile = File(...),
+    caderno: str = Form(default="Azul"),
+):
+    """
+    Recebe um PDF ou TXT de gabarito e retorna o dicionário de respostas.
+    Chaves: "N", "N-en", "N-es". Valores: "A"–"E".
+    """
+    ext = ".pdf" if gabarito.filename.lower().endswith(".pdf") else ".txt"
+    gab_bytes = await gabarito.read()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=ext, mode="wb") as tmp:
+        tmp.write(gab_bytes)
+        gab_path = tmp.name
+
+    try:
+        resultado = carregar_gabarito(gab_path, caderno)
+    finally:
+        try:
+            os.unlink(gab_path)
+        except Exception:
+            pass
+
+    return {"gabarito": resultado}
 
 
 @app.get("/")

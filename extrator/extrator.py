@@ -798,71 +798,76 @@ def processar_pagina(client: OpenAI, conteudo, num_pagina: int, modo: str = "tex
 
 def _visao_gabarito(pdf_path: str, caderno: str) -> dict[str, str]:
     """
-    Extrai gabarito de PDF via GPT Vision, processando todas as páginas.
+    Extrai gabarito de PDF via Claude, enviando o PDF diretamente como documento.
     Entende o formato ENEM: Linguagens tem colunas INGLÊS/ESPANHOL (Q1-5 diferentes),
     Ciências Humanas tem coluna única. Retorna chaves como "6", "46", "1-en", "1-es".
     """
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        log("OPENAI_API_KEY não configurada — gabarito por visão indisponível", "warn")
-        return {}
     try:
-        doc = fitz.open(pdf_path)
-        num_paginas = len(doc)
-        client_gab = OpenAI(api_key=api_key)
-        resultado = {}
+        from anthropic import Anthropic as _AnthropicClaude
+    except ImportError:
+        log("Anthropic SDK não instalado — gabarito por visão indisponível", "warn")
+        return {}
 
-        for idx in range(num_paginas):
-            pagina_img = _renderizar_pagina_fitz(doc[idx])
-            img_b64 = imagem_para_base64(pagina_img)
-            resposta = client_gab.chat.completions.create(
-                model=MODELO_FALLBACK,  # gpt-4o: mais confiável para leitura de tabelas
-                max_tokens=4096,
-                response_format={"type": "json_object"},
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/jpeg;base64,{img_b64}", "detail": "high"}
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        log("ANTHROPIC_API_KEY não configurada — gabarito por visão indisponível", "warn")
+        return {}
+
+    try:
+        pdf_b64 = base64.b64encode(Path(pdf_path).read_bytes()).decode()
+        client_gab = _AnthropicClaude(api_key=api_key)
+
+        prompt = (
+            f"Este PDF contém o gabarito oficial do ENEM, caderno {caderno}.\n"
+            "Extraia TODAS as respostas de TODAS as páginas e retorne um JSON.\n\n"
+            "Regras:\n"
+            "1. Tabela de LINGUAGENS tem 3 colunas: QUESTÃO | INGLÊS | ESPANHOL.\n"
+            "   - Se INGLÊS == ESPANHOL: use chave simples \"N\" (ex: \"6\": \"C\").\n"
+            "   - Se INGLÊS != ESPANHOL: use \"N-en\" para inglês e \"N-es\" para espanhol.\n"
+            "2. Todas as outras áreas têm coluna única: use chave simples \"N\".\n"
+            "3. Os números das questões devem ser strings sem zeros à esquerda (\"6\", não \"06\").\n"
+            "4. Retorne SOMENTE o JSON, sem texto adicional.\n\n"
+            "Formato esperado:\n"
+            "{\"gabarito\": {\"1-en\": \"A\", \"1-es\": \"B\", \"6\": \"C\", \"46\": \"D\", \"91\": \"E\"}}"
+        )
+
+        resposta = client_gab.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=2048,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "document",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "application/pdf",
+                            "data": pdf_b64,
                         },
-                        {
-                            "type": "text",
-                            "text": (
-                                f"Esta imagem é um gabarito do ENEM (página {idx + 1} de {num_paginas}), caderno {caderno}.\n"
-                                "Regras de extração:\n"
-                                "1. Tabela de LINGUAGENS: tem subcoluna INGLÊS e ESPANHOL.\n"
-                                "   - Para questões onde as respostas INGLÊS e ESPANHOL são IGUAIS: use chave '\"N\"' (ex: '\"6\"': 'C').\n"
-                                "   - Para questões onde são DIFERENTES (normalmente Q1-5): use chaves '\"N-en\"' e '\"N-es\"' separadas.\n"
-                                "2. Tabela de CIÊNCIAS HUMANAS ou qualquer outra com coluna única: use chave '\"N\"'.\n"
-                                "3. Se a página não contiver gabarito, retorne objeto vazio.\n"
-                                "Retorne APENAS JSON no formato:\n"
-                                "{\"gabarito\": {\"1-en\": \"A\", \"1-es\": \"A\", \"2-en\": \"A\", \"2-es\": \"C\", \"6\": \"C\", \"46\": \"D\", ...}}"
-                            )
-                        }
-                    ]
-                }]
-            )
-            dados = json.loads(resposta.choices[0].message.content)
-            gab_pagina = dados.get("gabarito", {})
-            if isinstance(gab_pagina, dict):
-                for chave, letra in gab_pagina.items():
-                    letra = str(letra).upper()
-                    if letra in LETRAS:
-                        resultado[str(chave)] = letra
-            elif isinstance(gab_pagina, list):
-                # fallback: lista de pares [num, letra]
-                for par in gab_pagina:
-                    if len(par) == 2:
-                        num = str(par[0]).lstrip("0") or "0"
-                        letra = str(par[1]).upper()
-                        if letra in LETRAS:
-                            resultado[num] = letra
+                    },
+                    {"type": "text", "text": prompt},
+                ],
+            }],
+        )
 
-        doc.close()
+        texto = resposta.content[0].text.strip()
+        # Extrair JSON mesmo que venha com texto ao redor
+        inicio = texto.find("{")
+        fim    = texto.rfind("}") + 1
+        dados  = json.loads(texto[inicio:fim])
+
+        resultado = {}
+        gab = dados.get("gabarito", {})
+        for chave, letra in gab.items():
+            letra = str(letra).upper()
+            if letra in LETRAS:
+                resultado[str(chave)] = letra
+
+        log(f"Claude extraiu {len(resultado)} respostas do gabarito", "ok")
         return resultado
+
     except Exception as e:
-        log(f"Erro ao extrair gabarito por visão: {e}", "warn")
+        log(f"Erro ao extrair gabarito via Claude: {e}", "warn")
         return {}
 
 

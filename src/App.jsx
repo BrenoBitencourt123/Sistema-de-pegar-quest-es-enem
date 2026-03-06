@@ -113,6 +113,7 @@ export default function App() {
   const [showBatchModal, setShowBatchModal] = useState(false)
   const importRef        = useRef(null)
   const annotatorInputRef = useRef(null)
+  const gabaritoInputRef  = useRef(null)
 
   // Auto-save no localStorage — tenta com imagens, cai sem imagens se estourar o limite
   useEffect(() => {
@@ -302,6 +303,41 @@ export default function App() {
     setBatchResult({ ok, erros, total: elegíveis.length })
   }
 
+  async function handleCarregarGabarito(file) {
+    if (!file) return
+    // Detecta o caderno a partir do campo exam da primeira questão
+    const examStr = questions[0]?.exam || ''
+    const caderno = examStr.match(/azul|rosa|amarelo|branco|cinza/i)?.[0] || 'Azul'
+
+    const form = new FormData()
+    form.append('gabarito', file)
+    form.append('caderno', caderno)
+
+    try {
+      const res = await fetch(`${BACKEND}/gabarito`, { method: 'POST', body: form })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const { gabarito } = await res.json()
+
+      const LETTERS = ['A', 'B', 'C', 'D', 'E']
+      let preenchidas = 0
+
+      setQuestions(prev => prev.map(q => {
+        const num = String(parseInt(q.number) || 0)
+        const lang = q.foreign_language || ''
+        const chave = lang === 'ingles' ? `${num}-en` : lang === 'espanhol' ? `${num}-es` : num
+        const letra = (gabarito[chave] || gabarito[num] || '').toUpperCase()
+        const idx = LETTERS.indexOf(letra)
+        if (idx === -1) return q
+        preenchidas++
+        return { ...q, correct: idx }
+      }))
+
+      alert(`Gabarito aplicado! ${preenchidas} questões atualizadas.`)
+    } catch (err) {
+      alert(`Erro ao carregar gabarito: ${err.message}`)
+    }
+  }
+
   function handleExport() {
     const blob = new Blob([JSON.stringify(questions, null, 2)], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
@@ -461,6 +497,18 @@ export default function App() {
               </span>
             </button>
 
+            {/* Carregar Gabarito */}
+            <button
+              onClick={() => gabaritoInputRef.current.click()}
+              className="flex items-center gap-1.5 text-xs font-semibold text-teal-700 bg-teal-50 hover:bg-teal-100 px-3 py-2 rounded-lg transition border border-teal-200"
+              title="Carregar gabarito PDF/TXT e aplicar nas questões"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <span className="hidden sm:inline">Gabarito</span>
+            </button>
+
             {/* Anotar PDF */}
             <button
               onClick={() => annotatorInputRef.current.click()}
@@ -529,6 +577,13 @@ export default function App() {
         </div>
 
         <input ref={importRef} type="file" accept=".json" className="hidden" onChange={handleImport} />
+        <input
+          ref={gabaritoInputRef}
+          type="file"
+          accept=".pdf,.txt"
+          className="hidden"
+          onChange={e => { handleCarregarGabarito(e.target.files[0]); e.target.value = '' }}
+        />
         <input
           ref={annotatorInputRef}
           type="file"
