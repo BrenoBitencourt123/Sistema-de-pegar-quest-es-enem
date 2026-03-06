@@ -79,7 +79,7 @@ export default function PdfAnnotatorModal({ file, onSave, onClose }) {
       await page.render({ canvasContext: ctx, viewport }).promise
       if (cancelled) return
       pageCanvasCache.current.set(currentPage, canvas)
-      setPageDataUrl(canvas.toDataURL('image/png'))
+      setPageDataUrl(canvas.toDataURL('image/webp', 0.92))
     }
     renderPage()
     return () => { cancelled = true }
@@ -211,7 +211,7 @@ export default function PdfAnnotatorModal({ file, onSave, onClose }) {
         results.push({
           questionNumber: sel.questionNumber,
           role: sel.role,
-          dataUrl: cropCanvas.toDataURL('image/png'),
+          dataUrl: cropCanvas.toDataURL('image/webp', 0.92),
         })
       }
     }
