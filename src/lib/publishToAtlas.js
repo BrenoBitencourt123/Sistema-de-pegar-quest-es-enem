@@ -12,6 +12,14 @@ const AREA_MAP = {
   espanhol:   'Linguagens, Códigos e suas Tecnologias',
 }
 
+const DISCIPLINA_PARA_AREA = {
+  historia: 'humanas', geografia: 'humanas', sociologia: 'humanas', filosofia: 'humanas',
+  quimica: 'natureza', fisica: 'natureza', biologia: 'natureza',
+  portugues: 'linguagens', literatura: 'linguagens', artes: 'linguagens',
+  ingles: 'linguagens', espanhol: 'linguagens',
+  matematica: 'matematica',
+}
+
 const IDIOMAS = ['ingles', 'espanhol']
 const LETTERS  = ['A', 'B', 'C', 'D', 'E']
 
@@ -50,7 +58,9 @@ async function uploadImagem(dataUrl, questionNumber, idx) {
  */
 export async function publicarQuestao(question) {
   const year      = extractYear(question.exam)
-  const areaCode  = question.area?.toLowerCase() || ''
+  const areaCode  = question.area?.toLowerCase()
+    || DISCIPLINA_PARA_AREA[question.disciplina?.toLowerCase()]
+    || ''
   const area      = AREA_MAP[areaCode] || areaCode || null
   const idioma    = question.foreign_language || (IDIOMAS.includes(areaCode) ? areaCode : '') || ''
 

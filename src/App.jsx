@@ -305,6 +305,16 @@ export default function App() {
 
   const [classificandoState, setClassificandoState] = useState('idle') // 'idle' | 'loading'
 
+  function disciplinaParaArea(disciplina) {
+    if (!disciplina) return null
+    const d = disciplina.toLowerCase()
+    if (['historia', 'geografia', 'sociologia', 'filosofia'].includes(d)) return 'humanas'
+    if (['quimica', 'fisica', 'biologia'].includes(d)) return 'natureza'
+    if (['portugues', 'literatura', 'artes', 'ingles', 'espanhol'].includes(d)) return 'linguagens'
+    if (d === 'matematica') return 'matematica'
+    return null
+  }
+
   async function handleClassificar() {
     const elegiveis = questions.filter(q => q.number && q.command && q.alternatives.length >= 2)
     if (elegiveis.length === 0) {
@@ -320,7 +330,10 @@ export default function App() {
           questoes: elegiveis.map(q => ({
             number: q.number,
             area: q.area || 'matematica',
-            command: q.command,
+            command: [
+              ...(q.content || []).filter(b => b.type === 'text' && b.value?.trim()).map(b => b.value.trim()),
+              q.command?.trim(),
+            ].filter(Boolean).join('\n\n'),
             alternatives: q.alternatives,
           })),
         }),
@@ -329,7 +342,9 @@ export default function App() {
       const { classificacoes } = await res.json()
       setQuestions(prev => prev.map(q => {
         const cls = classificacoes[String(q.number)]
-        return cls ? { ...q, ...cls } : q
+        if (!cls) return q
+        const area = q.area || disciplinaParaArea(cls.disciplina)
+        return { ...q, ...cls, area }
       }))
       alert(`${Object.keys(classificacoes).length} questões classificadas com sucesso!`)
     } catch (err) {
@@ -738,6 +753,54 @@ export default function App() {
                       Erro ao publicar
                     </span>
                   )}
+                  <button
+                    onClick={async () => {
+                      if (!question.number || !question.command) return
+                      setClassificandoState('loading')
+                      try {
+                        const res = await fetch(`${BACKEND}/classificar`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            questoes: [{
+                              number: question.number,
+                              area: question.area || 'matematica',
+                              command: [
+                                ...(question.content || []).filter(b => b.type === 'text' && b.value?.trim()).map(b => b.value.trim()),
+                                question.command?.trim(),
+                              ].filter(Boolean).join('\n\n'),
+                              alternatives: question.alternatives,
+                            }],
+                          }),
+                        })
+                        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+                        const { classificacoes } = await res.json()
+                        const cls = classificacoes[String(question.number)]
+                        if (cls) {
+                          const area = question.area || disciplinaParaArea(cls.disciplina)
+                          setQuestions(prev => prev.map(q => q.number === question.number ? { ...q, ...cls, area } : q))
+                        }
+                      } catch (err) {
+                        alert(`Erro ao classificar: ${err.message}`)
+                      } finally {
+                        setClassificandoState('idle')
+                      }
+                    }}
+                    disabled={classificandoState === 'loading'}
+                    className="flex items-center gap-1.5 text-xs font-semibold text-white bg-violet-500 hover:bg-violet-600 disabled:opacity-60 disabled:cursor-not-allowed px-3 py-1.5 rounded-lg transition shadow-sm"
+                  >
+                    {classificandoState === 'loading' ? (
+                      <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+                      </svg>
+                    ) : (
+                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                      </svg>
+                    )}
+                    Classificar
+                  </button>
                   {isQuestionComplete(question) && !question.needs_review && (
                     <button
                       onClick={handlePublish}
